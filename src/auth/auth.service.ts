@@ -1,5 +1,6 @@
 import {
   ConflictException,
+  ForbiddenException,
   Injectable,
   InternalServerErrorException,
   UnauthorizedException,
@@ -29,7 +30,9 @@ export class AuthService {
       data: { email: dto.email, passwordHash, displayName: dto.displayName },
     });
 
-    return this.issueTokens(user.id, user.email);
+    const tokens = await this.issueTokens(user.id, user.email);
+    await this.saveRefresh(user.id, tokens.refreshToken);
+    return tokens;
   }
 
   async login(dto: LoginDto): Promise<Tokens> {
@@ -41,7 +44,61 @@ export class AuthService {
     const ok = await compareHash(dto.password, user.passwordHash);
     if (!ok) throw new UnauthorizedException('Invalid credentials');
 
-    return this.issueTokens(user.id, user.email);
+    const tokens = await this.issueTokens(user.id, user.email);
+    await this.saveRefresh(user.id, tokens.refreshToken);
+    return tokens;
+  }
+
+  async refresh(refreshToken: string): Promise<Tokens> {
+    type RefreshPayload = { sub: string; email: string; exp?: number };
+
+    let payload: RefreshPayload;
+    try {
+      payload = await this.jwt.verifyAsync<RefreshPayload>(refreshToken, {
+        secret: this.getJwtSecret('JWT_REFRESH_SECRET'),
+      });
+    } catch {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const userId = payload.sub;
+    if (!userId) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        refreshTokenHash: true,
+        refreshTokenExp: true,
+      },
+    });
+    if (!user?.refreshTokenHash) {
+      throw new ForbiddenException('Refresh revoked');
+    }
+
+    const match = await compareHash(refreshToken, user.refreshTokenHash);
+    if (!match) {
+      throw new ForbiddenException('Refresh mismatch');
+    }
+
+    if (user.refreshTokenExp && user.refreshTokenExp.getTime() < Date.now()) {
+      throw new ForbiddenException('Refresh expired');
+    }
+
+    const tokens = await this.issueTokens(user.id, user.email);
+    await this.saveRefresh(user.id, tokens.refreshToken);
+    return tokens;
+  }
+
+  async logout(userId: string): Promise<{ ok: true }> {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: { refreshTokenHash: null, refreshTokenExp: null },
+    });
+    return { ok: true };
   }
 
   private getJwtSecret(
@@ -64,5 +121,31 @@ export class AuthService {
       { secret: this.getJwtSecret('JWT_REFRESH_SECRET'), expiresIn: '7d' },
     );
     return { accessToken, refreshToken };
+  }
+
+  private async saveRefresh(
+    userId: string,
+    refreshTokenPlain: string,
+  ): Promise<void> {
+    const refreshHash = await hashValue(refreshTokenPlain);
+
+    const decodedRaw: unknown = this.jwt.decode(refreshTokenPlain);
+    let expDate: Date | null = null;
+    if (
+      decodedRaw &&
+      typeof decodedRaw === 'object' &&
+      'exp' in decodedRaw &&
+      typeof (decodedRaw as { exp: unknown }).exp === 'number'
+    ) {
+      expDate = new Date((decodedRaw as { exp: number }).exp * 1000);
+    }
+
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        refreshTokenHash: refreshHash,
+        refreshTokenExp: expDate,
+      },
+    });
   }
 }
