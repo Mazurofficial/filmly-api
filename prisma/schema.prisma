@@ -29,6 +29,24 @@ model Movie {
   lastSyncedAt DateTime?
 
   users UserMovie[]
+  genres MovieGenreOnMovie[]
+}
+
+model MovieGenre {
+  id     Int     @id
+  name   String
+  movies MovieGenreOnMovie[]
+}
+
+model MovieGenreOnMovie {
+  movieId Int
+  genreId Int
+
+  movie Movie     @relation(fields: [movieId], references: [tmdbId], onDelete: Cascade, onUpdate: Cascade)
+  genre MovieGenre @relation(fields: [genreId], references: [id], onDelete: Cascade, onUpdate: Cascade)
+
+  @@id([movieId, genreId])
+  @@index([genreId])
 }
 
 model UserMovie {
@@ -51,4 +69,3 @@ model UserMovie {
   @@index([userId])
   @@index([movieId])
 }
-
