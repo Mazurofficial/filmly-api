@@ -47,6 +47,7 @@ model MovieGenreOnMovie {
 
   @@id([movieId, genreId])
   @@index([genreId])
+  @@index([movieId])
 }
 
 model UserMovie {
@@ -68,4 +69,5 @@ model UserMovie {
   @@unique([userId, movieId])
   @@index([userId])
   @@index([movieId])
+  @@index([userId, updatedAt])
 }
